@@ -823,27 +823,27 @@ static void D_T(X(plan) *ths)
 }
 
 /* sub routines for the fast transforms matrix vector multiplication with B, B^T */
-#define MACRO_B_init_result_A memset(ths->f, 0, (size_t)(ths->M_total) * sizeof(C));
-#define MACRO_B_init_result_T memset(ths->g, 0, (size_t)(ths->n_total) * sizeof(C));
+#define MACRO_B_init_result_A memset(f, 0, (size_t)(ths->M_total) * sizeof(C));
+#define MACRO_B_init_result_T memset(g, 0, (size_t)(ths->n_total) * sizeof(C));
 
 #define MACRO_B_PRE_FULL_PSI_compute_A \
 { \
-  (*fj) += ths->psi[ix] * g[ths->psi_index_g[ix]]; \
+  (*fj) += psi[ix] * g[psi_index_g[ix]]; \
 }
 
 #define MACRO_B_PRE_FULL_PSI_compute_T \
 { \
-  g[ths->psi_index_g[ix]] += ths->psi[ix] * (*fj); \
+  g[psi_index_g[ix]] += psi[ix] * (*fj); \
 }
 
 #define MACRO_B_compute_A \
 { \
-  ths->f[j] += phi_prod[ths->d] * ths->g[ll_plain[ths->d]]; \
+  f[j] += phi_prod[ths->d] * g[ll_plain[ths->d]]; \
 }
 
 #define MACRO_B_compute_T \
 { \
-  ths->g[ll_plain[ths->d]] += phi_prod[ths->d] * ths->f[j]; \
+  g[ll_plain[ths->d]] += phi_prod[ths->d] * f[j]; \
 }
 
 #define MACRO_with_FG_PSI fg_p[t2][lj[t2]]
@@ -1003,15 +1003,17 @@ static inline void B_serial_ ## which_one (X(plan) *ths) \
   R ip_w; \
   INT ip_u; \
   INT ip_s = ths->K/(ths->m+2); \
+  C *restrict f = (C*)ths->f; \
+  C *restrict g = (C*)ths->g; \
+  const R *restrict psi = (const R*)ths->psi; \
+  const INT *restrict psi_index_g = (const INT*)ths->psi_index_g; \
  \
   MACRO_B_init_result_ ## which_one; \
  \
   if (ths->flags & PRE_FULL_PSI) \
   { \
     INT j; \
-    C *f, *g; /* local copy */ \
     C *fj; /* local copy */ \
-    f = (C*)ths->f; g = (C*)ths->g; \
  \
     for (ix = 0, j = 0, fj = f; j < ths->M_total; j++, fj++) \
     { \
@@ -1263,7 +1265,7 @@ MACRO_B(A)
                 phi_prod[t2+1] = phi_prod[t2] * MACRO_COMPUTE_ ## whichone; \
                 ll_plain[t2+1] = ll_plain[t2] * ths->n[t2] + l_all[t2*(2*ths->m+2) + lj[t2]]; \
  \
-                ths->f[j] += phi_prod[ths->d] * ths->g[ll_plain[ths->d]]; \
+                f[j] += phi_prod[ths->d] * g[ll_plain[ths->d]]; \
               } \
             } \
           } \
@@ -1303,7 +1305,7 @@ MACRO_B(A)
                   phi_prod[t2+1] = phi_prod[t2] * MACRO_COMPUTE_ ## whichone; \
                   ll_plain[t2+1] = ll_plain[t2] * ths->n[t2] + l_all[t2*(2*ths->m+2) + lj[t2]]; \
  \
-                  ths->f[j] += phi_prod[ths->d] * ths->g[ll_plain[ths->d]]; \
+                  f[j] += phi_prod[ths->d] * g[ll_plain[ths->d]]; \
                 } \
               } \
             } \
@@ -1315,7 +1317,7 @@ MACRO_B(A)
         { \
           MACRO_B_openmp_A_COMPUTE_UPDATE_ ##whichone \
  \
-          ths->f[j] += phi_prod[ths->d] * ths->g[ll_plain[ths->d]]; \
+          f[j] += phi_prod[ths->d] * g[ll_plain[ths->d]]; \
  \
           MACRO_count_uo_l_lj_t; \
         } /* for(l_L) */ \
@@ -1326,8 +1328,12 @@ static inline void B_openmp_A (X(plan) *ths)
 {
   INT lprod; /* 'regular bandwidth' of matrix B  */
   INT k;
+  C *restrict f = (C*)ths->f;
+  const C *restrict g = (const C*)ths->g;
+  const R *restrict psi = (const R*)ths->psi;
+  const INT *restrict psi_index_g = (const INT*)ths->psi_index_g;
 
-  memset(ths->f, 0, ths->M_total * sizeof(C));
+  memset(f, 0, ths->M_total * sizeof(C));
 
   for (k = 0, lprod = 1; k < ths->d; k++)
     lprod *= (2*ths->m+2);
@@ -1339,9 +1345,10 @@ static inline void B_openmp_A (X(plan) *ths)
     {
       INT l;
       INT j = (ths->flags & NFFT_SORT_NODES) ? ths->index_x[2*k+1] : k;
-      ths->f[j] = K(0.0);
+      C fj = K(0.0);
       for (l = 0; l < lprod; l++)
-        ths->f[j] += ths->psi[j*lprod+l] * ths->g[ths->psi_index_g[j*lprod+l]];
+        fj += psi[j*lprod+l] * g[psi_index_g[j*lprod+l]];
+      f[j] = fj;
     }
     return;
   }
@@ -1579,9 +1586,10 @@ static void nfft_adjoint_B_omp_blockwise_init(INT *my_u0, INT *my_o0,
  *
  * \author Toni Volkmer
  */
-static void nfft_adjoint_B_compute_full_psi(C *g, const INT *psi_index_g,
-    const R *psi, const C *f, const INT M, const INT d, const INT *n,
-    const INT m, const unsigned flags, const INT *index_x)
+static void nfft_adjoint_B_compute_full_psi(C *restrict g,
+    const INT *restrict psi_index_g, const R *restrict psi,
+    const C *restrict f, const INT M, const INT d, const INT *restrict n,
+    const INT m, const unsigned flags, const INT *restrict index_x)
 {
   INT k;
   INT lprod;
@@ -1855,7 +1863,7 @@ MACRO_B(T)
                 phi_prod[t2+1] = phi_prod[t2] * MACRO_COMPUTE_ ## whichone; \
                 ll_plain[t2+1] = ll_plain[t2] * ths->n[t2] + l_all[t2*(2*ths->m+2) + lj[t2]]; \
  \
-                ths->g[ll_plain[ths->d]] += phi_prod[ths->d] * ths->f[j]; \
+                g[ll_plain[ths->d]] += phi_prod[ths->d] * f[j]; \
               } \
             } \
           } \
@@ -1897,7 +1905,7 @@ MACRO_B(T)
                   phi_prod[t2+1] = phi_prod[t2] * MACRO_COMPUTE_ ## whichone; \
                   ll_plain[t2+1] = ll_plain[t2] * ths->n[t2] + l_all[t2*(2*ths->m+2) + lj[t2]]; \
  \
-                  ths->g[ll_plain[ths->d]] += phi_prod[ths->d] * ths->f[j]; \
+                  g[ll_plain[ths->d]] += phi_prod[ths->d] * f[j]; \
                 } \
               } \
             } \
@@ -1915,7 +1923,7 @@ MACRO_B(T)
             continue; \
           } \
           MACRO_adjoint_nd_B_OMP_COMPUTE_UPDATE_ ##whichone \
-          ths->g[ll_plain[ths->d]] += phi_prod[ths->d] * ths->f[j]; \
+          g[ll_plain[ths->d]] += phi_prod[ths->d] * f[j]; \
           MACRO_count_uo_l_lj_t; \
           l_L++; \
         } /* for(l_L) */ \
@@ -2115,8 +2123,10 @@ static inline void B_openmp_T(X(plan) *ths)
 {
   INT lprod; /* 'regular bandwidth' of matrix B  */
   INT k;
+  C *restrict g = (C*)ths->g;
+  const C *restrict f = (const C*)ths->f;
 
-  memset(ths->g, 0, (size_t)(ths->n_total) * sizeof(C));
+  memset(g, 0, (size_t)(ths->n_total) * sizeof(C));
 
   for (k = 0, lprod = 1; k < ths->d; k++)
     lprod *= (2*ths->m+2);
@@ -2237,8 +2247,14 @@ static void nfft_init_fg(R *e, R *q, const R b)
 }
 
 
-static void nfft_trafo_1d_compute(C *fj, const C *g,const R *psij_const,
-  const R *xj, const INT n, const INT m)
+/* The grid, the node values and the window run come from separate allocations,
+ * and restrict says so. Without it the store into the accumulator may alias the
+ * window run, so the compiler reloads the run and recomputes the products that
+ * are constant along the innermost loop: in 3d that is two loads and one
+ * multiply per grid point, and it blocks vectorisation of the inner loop. */
+static void nfft_trafo_1d_compute(C *restrict fj, const C *restrict g,
+    const R *restrict psij_const, const R *restrict xj, const INT n,
+    const INT m)
 {
   INT u, o, l;
   const C *gj;
@@ -2262,8 +2278,9 @@ static void nfft_trafo_1d_compute(C *fj, const C *g,const R *psij_const,
 }
 
 #ifndef _OPENMP
-static void nfft_adjoint_1d_compute_serial(const C *fj, C *g,
-    const R *psij_const, const R *xj, const INT n, const INT m)
+static void nfft_adjoint_1d_compute_serial(const C *restrict fj,
+    C *restrict g, const R *restrict psij_const, const R *restrict xj,
+    const INT n, const INT m)
 {
   INT u,o,l;
   C *gj;
@@ -2289,8 +2306,9 @@ static void nfft_adjoint_1d_compute_serial(const C *fj, C *g,
 
 #ifdef _OPENMP
 /* adjoint NFFT one-dimensional case with OpenMP atomic operations */
-static void nfft_adjoint_1d_compute_omp_atomic(const C f, C *g,
-    const R *psij_const, const R *xj, const INT n, const INT m)
+static void nfft_adjoint_1d_compute_omp_atomic(const C f, C *restrict g,
+    const R *restrict psij_const, const R *restrict xj, const INT n,
+    const INT m)
 {
   INT u,o,l;
   C *gj;
@@ -2332,9 +2350,9 @@ static void nfft_adjoint_1d_compute_omp_atomic(const C f, C *g,
  *
  * \author Toni Volkmer
  */
-static void nfft_adjoint_1d_compute_omp_blockwise(const C f, C *g,
-    const R *psij_const, const R *xj, const INT n, const INT m,
-    const INT my_u0, const INT my_o0)
+static void nfft_adjoint_1d_compute_omp_blockwise(const C f, C *restrict g,
+    const R *restrict psij_const, const R *restrict xj, const INT n,
+    const INT m, const INT my_u0, const INT my_o0)
 {
   INT ar_u,ar_o,l;
 
@@ -2395,11 +2413,14 @@ static void nfft_adjoint_1d_compute_omp_blockwise(const C f, C *g,
 static void nfft_trafo_1d_B(X(plan) *ths)
 {
   const INT n = ths->n[0], M = ths->M_total, m = ths->m, m2p2 = 2*m+2;
-  const C *g = (C*)ths->g;
+  const C *restrict g = (const C*)ths->g;
 
   if (ths->flags & PRE_FULL_PSI)
   {
     INT k;
+    C *restrict f = ths->f;
+    const R *restrict psi = ths->psi;
+    const INT *restrict psi_index_g = ths->psi_index_g;
 #ifdef _OPENMP
     #pragma omp parallel for default(shared) private(k)
 #endif
@@ -2407,9 +2428,10 @@ static void nfft_trafo_1d_B(X(plan) *ths)
     {
       INT l;
       INT j = (ths->flags & NFFT_SORT_NODES) ? ths->index_x[2*k+1] : k;
-      ths->f[j] = K(0.0);
+      C fj = K(0.0);
       for (l = 0; l < m2p2; l++)
-        ths->f[j] += ths->psi[j*m2p2+l] * g[ths->psi_index_g[j*m2p2+l]];
+        fj += psi[j*m2p2+l] * g[psi_index_g[j*m2p2+l]];
+      f[j] = fj;
     }
     return;
   } /* if(PRE_FULL_PSI) */
@@ -3023,9 +3045,10 @@ void X(adjoint_1d)(X(plan) *ths)
 /* ################################################ SPECIFIC VERSIONS FOR d=2 */
 
 
-static void nfft_trafo_2d_compute(C *fj, const C *g, const R *psij_const0,
-    const R *psij_const1, const R *xj0, const R *xj1, const INT n0,
-    const INT n1, const INT m)
+static void nfft_trafo_2d_compute(C *restrict fj, const C *restrict g,
+    const R *restrict psij_const0, const R *restrict psij_const1,
+    const R *restrict xj0, const R *restrict xj1, const INT n0, const INT n1,
+    const INT m)
 {
   INT u0,o0,l0,u1,o1,l1;
   const C *gj;
@@ -3104,9 +3127,10 @@ static void nfft_trafo_2d_compute(C *fj, const C *g, const R *psij_const0,
 
 #ifdef _OPENMP
 /* adjoint NFFT two-dimensional case with OpenMP atomic operations */
-static void nfft_adjoint_2d_compute_omp_atomic(const C f, C *g,
-            const R *psij_const0, const R *psij_const1, const R *xj0,
-            const R *xj1, const INT n0, const INT n1, const INT m)
+static void nfft_adjoint_2d_compute_omp_atomic(const C f, C *restrict g,
+            const R *restrict psij_const0, const R *restrict psij_const1,
+            const R *restrict xj0, const R *restrict xj1, const INT n0,
+            const INT n1, const INT m)
 {
   INT u0,o0,l0,u1,o1,l1;
 
@@ -3160,10 +3184,10 @@ static void nfft_adjoint_2d_compute_omp_atomic(const C f, C *g,
  *
  * \author Toni Volkmer
  */
-static void nfft_adjoint_2d_compute_omp_blockwise(const C f, C *g,
-            const R *psij_const0, const R *psij_const1, const R *xj0,
-            const R *xj1, const INT n0, const INT n1, const INT m,
-            const INT my_u0, const INT my_o0)
+static void nfft_adjoint_2d_compute_omp_blockwise(const C f, C *restrict g,
+            const R *restrict psij_const0, const R *restrict psij_const1,
+            const R *restrict xj0, const R *restrict xj1, const INT n0,
+            const INT n1, const INT m, const INT my_u0, const INT my_o0)
 {
   INT ar_u0,ar_o0,l0,u1,o1,l1;
   INT index_temp1[2*m+2];
@@ -3239,9 +3263,10 @@ static void nfft_adjoint_2d_compute_omp_blockwise(const C f, C *g,
 #endif
 
 #ifndef _OPENMP
-static void nfft_adjoint_2d_compute_serial(const C *fj, C *g,
-            const R *psij_const0, const R *psij_const1, const R *xj0,
-            const R *xj1, const INT n0, const INT n1, const INT m)
+static void nfft_adjoint_2d_compute_serial(const C *restrict fj,
+            C *restrict g, const R *restrict psij_const0,
+            const R *restrict psij_const1, const R *restrict xj0,
+            const R *restrict xj1, const INT n0, const INT n1, const INT m)
 {
   INT u0,o0,l0,u1,o1,l1;
   C *gj;
@@ -3319,7 +3344,7 @@ static void nfft_adjoint_2d_compute_serial(const C *fj, C *g,
 
 static void nfft_trafo_2d_B(X(plan) *ths)
 {
-  const C *g = (C*)ths->g;
+  const C *restrict g = (const C*)ths->g;
   const INT n0 = ths->n[0];
   const INT n1 = ths->n[1];
   const INT M = ths->M_total;
@@ -3330,6 +3355,9 @@ static void nfft_trafo_2d_B(X(plan) *ths)
   if(ths->flags & PRE_FULL_PSI)
   {
     const INT lprod = (2*m+2) * (2*m+2);
+    C *restrict f = ths->f;
+    const R *restrict psi = ths->psi;
+    const INT *restrict psi_index_g = ths->psi_index_g;
 #ifdef _OPENMP
     #pragma omp parallel for default(shared) private(k)
 #endif
@@ -3337,9 +3365,10 @@ static void nfft_trafo_2d_B(X(plan) *ths)
     {
       INT l;
       INT j = (ths->flags & NFFT_SORT_NODES) ? ths->index_x[2*k+1] : k;
-      ths->f[j] = K(0.0);
+      C fj = K(0.0);
       for (l = 0; l < lprod; l++)
-        ths->f[j] += ths->psi[j*lprod+l] * g[ths->psi_index_g[j*lprod+l]];
+        fj += psi[j*lprod+l] * g[psi_index_g[j*lprod+l]];
+      f[j] = fj;
     }
     return;
   } /* if(PRE_FULL_PSI) */
@@ -4066,9 +4095,11 @@ void X(adjoint_2d)(X(plan) *ths)
 /* ################################################ SPECIFIC VERSIONS FOR d=3 */
 
 
-static void nfft_trafo_3d_compute(C *fj, const C *g, const R *psij_const0,
-    const R *psij_const1, const R *psij_const2, const R *xj0, const R *xj1,
-    const R *xj2, const INT n0, const INT n1, const INT n2, const INT m)
+static void nfft_trafo_3d_compute(C *restrict fj, const C *restrict g,
+    const R *restrict psij_const0, const R *restrict psij_const1,
+    const R *restrict psij_const2, const R *restrict xj0,
+    const R *restrict xj1, const R *restrict xj2, const INT n0, const INT n1,
+    const INT n2, const INT m)
 {
   INT u0, o0, l0, u1, o1, l1, u2, o2, l2;
   const C *gj;
@@ -4335,11 +4366,11 @@ static void nfft_trafo_3d_compute(C *fj, const C *g, const R *psij_const0,
  *
  * \author Toni Volkmer
  */
-static void nfft_adjoint_3d_compute_omp_blockwise(const C f, C *g,
-    const R *psij_const0, const R *psij_const1, const R *psij_const2,
-    const R *xj0, const R *xj1, const R *xj2,
-    const INT n0, const INT n1, const INT n2, const INT m,
-    const INT my_u0, const INT my_o0)
+static void nfft_adjoint_3d_compute_omp_blockwise(const C f, C *restrict g,
+    const R *restrict psij_const0, const R *restrict psij_const1,
+    const R *restrict psij_const2, const R *restrict xj0,
+    const R *restrict xj1, const R *restrict xj2, const INT n0, const INT n1,
+    const INT n2, const INT m, const INT my_u0, const INT my_o0)
 {
   INT ar_u0,ar_o0,l0,u1,o1,l1,u2,o2,l2;
 
@@ -4439,10 +4470,11 @@ static void nfft_adjoint_3d_compute_omp_blockwise(const C f, C *g,
 
 #ifdef _OPENMP
 /* adjoint NFFT three-dimensional case with OpenMP atomic operations */
-static void nfft_adjoint_3d_compute_omp_atomic(const C f, C *g,
-    const R *psij_const0, const R *psij_const1, const R *psij_const2,
-    const R *xj0, const R *xj1, const R *xj2,
-    const INT n0, const INT n1, const INT n2, const INT m)
+static void nfft_adjoint_3d_compute_omp_atomic(const C f, C *restrict g,
+    const R *restrict psij_const0, const R *restrict psij_const1,
+    const R *restrict psij_const2, const R *restrict xj0,
+    const R *restrict xj1, const R *restrict xj2, const INT n0, const INT n1,
+    const INT n2, const INT m)
 {
   INT u0,o0,l0,u1,o1,l1,u2,o2,l2;
 
@@ -4486,10 +4518,11 @@ static void nfft_adjoint_3d_compute_omp_atomic(const C f, C *g,
 #endif
 
 #ifndef _OPENMP
-static void nfft_adjoint_3d_compute_serial(const C *fj, C *g,
-    const R *psij_const0, const R *psij_const1, const R *psij_const2, const R *xj0,
-    const R *xj1, const R *xj2, const INT n0, const INT n1, const INT n2,
-    const INT m)
+static void nfft_adjoint_3d_compute_serial(const C *restrict fj,
+    C *restrict g, const R *restrict psij_const0,
+    const R *restrict psij_const1, const R *restrict psij_const2,
+    const R *restrict xj0, const R *restrict xj1, const R *restrict xj2,
+    const INT n0, const INT n1, const INT n2, const INT m)
 {
   INT u0, o0, l0, u1, o1, l1, u2, o2, l2;
   C *gj;
@@ -4741,13 +4774,16 @@ static void nfft_trafo_3d_B(X(plan) *ths)
   const INT M = ths->M_total;
   const INT m = ths->m;
 
-  const C* g = (C*) ths->g;
+  const C* restrict g = (const C*) ths->g;
 
   INT k;
 
   if(ths->flags & PRE_FULL_PSI)
   {
     const INT lprod = (2*m+2) * (2*m+2) * (2*m+2);
+    C *restrict f = ths->f;
+    const R *restrict psi = ths->psi;
+    const INT *restrict psi_index_g = ths->psi_index_g;
 #ifdef _OPENMP
     #pragma omp parallel for default(shared) private(k)
 #endif
@@ -4755,9 +4791,10 @@ static void nfft_trafo_3d_B(X(plan) *ths)
     {
       INT l;
       INT j = (ths->flags & NFFT_SORT_NODES) ? ths->index_x[2*k+1] : k;
-      ths->f[j] = K(0.0);
+      C fj = K(0.0);
       for (l = 0; l < lprod; l++)
-        ths->f[j] += ths->psi[j*lprod+l] * g[ths->psi_index_g[j*lprod+l]];
+        fj += psi[j*lprod+l] * g[psi_index_g[j*lprod+l]];
+      f[j] = fj;
     }
     return;
   } /* if(PRE_FULL_PSI) */
