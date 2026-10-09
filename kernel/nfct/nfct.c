@@ -69,9 +69,14 @@ static inline INT intprod(const INT *vec, const INT a, const INT d)
 /* Block size for the phase recurrence in the direct transforms */
 #define NFFT_DIRECT_RECURRENCE_BLOCK 32
 
-/* Minimum innermost-axis length for the multivariate recurrence to pay: its per-row seed costs
- * a COS/SIN pair, so shorter rows evaluate BASE per frequency. */
-#define NFFT_DIRECT_RECURRENCE_MIN_INNER 8
+/* Minimum innermost-dimension length for the multivariate recurrence to pay. */
+#define NFFT_DIRECT_RECURRENCE_MIN_INNER 2
+
+/* Threaded adjoint: rows shorter than NFFT_DIRECT_SHORT_ROW, and fewer than
+ * NFFT_DIRECT_ROWS_PER_THREAD per thread, are shared out by frequency instead of by row
+ * to avoid cache contention. */
+#define NFFT_DIRECT_SHORT_ROW 8
+#define NFFT_DIRECT_ROWS_PER_THREAD 4
 
 /* The (co)sine value is a part of the complex phase exp(+i 2pi (k+OFFSET) x): NDCT reads the
  * real part (cos), NDST reads the imaginary part (sin). */
@@ -157,12 +162,11 @@ void X(trafo_direct)(const X(plan) *ths)
   }
   else
   {
-    /* multivariate case: along each row of f_hat (the innermost axis) the phase recurs as in
-     * the univariate case, re-seeded at every row start and every B steps; the outer axes add
-     * one factor per row. */
+    /* Multivariate: Recur phase along innermost axis and re-seed at every row start and after B steps. */
     const INT B = NFFT_DIRECT_RECURRENCE_BLOCK;
     const INT nl = ths->N[ths->d - 1] - OFFSET;
     const INT nrows = nl > 0 ? ths->N_total / nl : 0;
+    const int use_rec = (nl >= NFFT_DIRECT_RECURRENCE_MIN_INNER);
     INT j;
 #ifdef _OPENMP
     #pragma omp parallel for default(shared) private(j)
@@ -172,7 +176,7 @@ void X(trafo_direct)(const X(plan) *ths)
       const R *xj = ths->x + (size_t)j * ths->d;
       const R xl = xj[ths->d - 1];
       const R dphi = K2PI * xl;
-      const C dw = COS(dphi) + II * SIN(dphi);
+      const C dw = use_rec ? COS(dphi) + II * SIN(dphi) : K(0.0);
       R P[ths->d], v = K(0.0);
       INT k[ths->d], t, t2, r, i;
 
@@ -189,7 +193,7 @@ void X(trafo_direct)(const X(plan) *ths)
         const R *fr = f_hat + r * nl;
         R s = K(0.0);
 
-        if (nl >= NFFT_DIRECT_RECURRENCE_MIN_INNER)
+        if (use_rec)
         {
           i = 0;
           while (i < nl)
@@ -230,13 +234,13 @@ void X(trafo_direct)(const X(plan) *ths)
 }
 
 /* Adjoint over the rows [rlo,rhi) of f_hat, a row being the N[d-1] - OFFSET contiguous
- * frequencies of the innermost axis. Callers pass disjoint ranges, which keeps the f_hat
- * accumulation race-free. */
+ * frequencies of the innermost axis. */
 static void X(adjoint_direct_rows)(const X(plan) *ths, const INT rlo, const INT rhi)
 {
   R *f_hat = (R*)ths->f_hat, *f = (R*)ths->f;
   const INT B = NFFT_DIRECT_RECURRENCE_BLOCK;
   const INT nl = ths->N[ths->d - 1] - OFFSET;
+  const int use_rec = (nl >= NFFT_DIRECT_RECURRENCE_MIN_INNER);
   INT k0[ths->d], t, j, r = rlo;
 
   if (rlo >= rhi)
@@ -254,7 +258,7 @@ static void X(adjoint_direct_rows)(const X(plan) *ths, const INT rlo, const INT 
     const R *xj = ths->x + (size_t)j * ths->d;
     const R xl = xj[ths->d - 1];
     const R dphi = K2PI * xl;
-    const C dw = COS(dphi) + II * SIN(dphi);
+    const C dw = use_rec ? COS(dphi) + II * SIN(dphi) : K(0.0);
     R P[ths->d];
     INT k[ths->d], t2, i;
 
@@ -271,7 +275,7 @@ static void X(adjoint_direct_rows)(const X(plan) *ths, const INT rlo, const INT 
       R *fr = f_hat + r * nl;
       const R a = P[ths->d - 1];
 
-      if (nl >= NFFT_DIRECT_RECURRENCE_MIN_INNER)
+      if (use_rec)
       {
         i = 0;
         while (i < nl)
@@ -390,16 +394,46 @@ void X(adjoint_direct)(const X(plan) *ths)
   }
   else
   {
-    /* multivariate case: the recurrence runs along a row, so the parallel unit is the row */
+    /* Multivariate case: Recurrence runs along a row, parallel unit is the row */
     const INT nl = ths->N[ths->d - 1] - OFFSET;
     const INT nrows = nl > 0 ? ths->N_total / nl : 0;
 #ifdef _OPENMP
-    #pragma omp parallel default(shared)
+    if (nl >= NFFT_DIRECT_RECURRENCE_MIN_INNER && (nl >= NFFT_DIRECT_SHORT_ROW
+        || nrows >= NFFT_DIRECT_ROWS_PER_THREAD * omp_get_max_threads()))
     {
-      const int nt = omp_get_num_threads();
-      const int tid = omp_get_thread_num();
-      X(adjoint_direct_rows)(ths, (INT)(((long long)nrows * tid) / nt),
-                                  (INT)(((long long)nrows * (tid + 1)) / nt));
+      #pragma omp parallel default(shared)
+      {
+        const int nt = omp_get_num_threads();
+        const int tid = omp_get_thread_num();
+        X(adjoint_direct_rows)(ths, (INT)(((long long)nrows * tid) / nt),
+                                    (INT)(((long long)nrows * (tid + 1)) / nt));
+      }
+    }
+    else
+    {
+      /* Few short rows: parallelize over frequencies. */
+      INT k_L;
+      #pragma omp parallel for default(shared) private(k_L)
+      for (k_L = 0; k_L < ths->N_total; k_L++)
+      {
+        INT k[ths->d], k_temp = k_L, t, j;
+
+        for (t = ths->d - 1; t >= 0; t--)
+        {
+          k[t] = k_temp % (ths->N[t] - OFFSET);
+          k_temp /= ths->N[t] - OFFSET;
+        }
+
+        for (j = 0; j < ths->M_total; j++)
+        {
+          R v = f[j];
+
+          for (t = 0; t < ths->d; t++)
+            v *= X(base_reduced)(k[t], ths->x[j * ths->d + t]);
+
+          f_hat[k_L] += v;
+        }
+      }
     }
 #else
     X(adjoint_direct_rows)(ths, 0, nrows);
