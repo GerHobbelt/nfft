@@ -7,7 +7,7 @@ name: Accuracy Report (forks)
 # BMF *artifacts* (JSON data — parsed/rendered, never executed) and never checks
 # out or runs fork code. No gh-pages write (no contents:write), so forks get the
 # aggregate comment + Check only; the report link points at the develop dashboard.
-on:
+on:  # zizmor: ignore[dangerous-triggers] -- consumes artifacts as data only, see above
   workflow_run:
     workflows: ["Build Linux"]
     types: [completed]
@@ -17,12 +17,16 @@ concurrency:
   group: accuracy-fork-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
-permissions:
-  checks: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   fork-report:
+    name: fork-report
+    permissions:
+      contents: read  # Required to check out the default-branch scripts.
+      actions: read  # Required to download the Build Linux artifacts.
+      checks: write  # Required to create the accuracy Check.
+      pull-requests: write  # Required to post the PR comment.
     if: >-
       ${{ github.event.workflow_run.event == 'pull_request' &&
           github.event.workflow_run.head_repository.fork == true }}
