@@ -15,7 +15,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+
   build:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
     env:
       BUILD_CONFIG: "${{ matrix.os }}_${{ matrix.compiler }}_${{ matrix.window }}_${{ matrix.precision_opt == '' && 'double' || matrix.precision_opt == '--enable-float' && 'float' || matrix.precision_opt == '--enable-long-double' && 'long-double' || 'unknown' }}"
@@ -277,7 +282,7 @@ jobs:
 
     - name: CMake — Publish Test Report (serial)
       if: ${{ always() && hashFiles('build-cmake/tests/junit.xml') != '' }}
-      uses: ctrf-io/github-test-reporter@e500b992f936420eb633c91644cf10d4d71df700 # v1
+      uses: ctrf-io/github-test-reporter@7974087018bf4857cf5a9d78723e152038c3fa31 # v1
       with:
         report-path: './build-cmake/tests/junit.xml'
         integrations-config: |
@@ -339,7 +344,7 @@ jobs:
         done
 
     - name: Publish Test Report
-      uses: ctrf-io/github-test-reporter@e500b992f936420eb633c91644cf10d4d71df700 # v1
+      uses: ctrf-io/github-test-reporter@7974087018bf4857cf5a9d78723e152038c3fa31 # v1
       with:
         report-path: './tests/junit.xml'
         integrations-config: |
@@ -361,7 +366,7 @@ jobs:
 
     - name: Publish Test Report (threads)
       if: ${{ always() && hashFiles('tests/junit_threads.xml') != '' }}
-      uses: ctrf-io/github-test-reporter@e500b992f936420eb633c91644cf10d4d71df700 # v1
+      uses: ctrf-io/github-test-reporter@7974087018bf4857cf5a9d78723e152038c3fa31 # v1
       with:
         report-path: './tests/junit_threads.xml'
         integrations-config: |
@@ -377,6 +382,8 @@ jobs:
           }
 
   distcheck:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: macos-26
     name: "distcheck"
     env:
@@ -401,8 +408,8 @@ jobs:
 
   macos-ok:  # Single required status check: all jobs above must succeed.
     if: always()
-    needs: [ build, distcheck ]
+    needs: [ changes, build, distcheck ]
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || (needs.changes.outputs.build == 'true' && contains(needs.*.result, 'skipped'))
         run: exit 1
